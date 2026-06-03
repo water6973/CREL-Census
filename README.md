@@ -1,24 +1,37 @@
-# CREL-Census replication
+# CREL-Census
 
-Minimal artifacts to reproduce the **results tables and precision--recall figure** in:
+Training data and scripts for establishment closure models (Charles River Economics Labs / Census Bureau project).
 
-*Closing Time: Predicting Next-Quarter Establishment Closures for the Census Bureau* (Charles River Economics Labs, Spring 2026).
+## Contents
 
-## Files
+| Path | Description |
+|------|-------------|
+| `data/establishment_quarter_panel.parquet` | Establishment-quarter panel used to train all benchmark models (~27M rows, 63 features, 2019Q3--2025Q2). **Git LFS** (~1.7 GB). |
+| `data/feature_categories.json` | Feature groupings (static / quarterly / lag) for model specs |
+| `scripts/train_closure_benchmark.py` | Train CatBoost, XGBoost, and NGBoost; writes metrics and models under `outputs/benchmark/` |
+| `scripts/train_combined_catboost.py` | Parquet streaming and sample-cache helpers (imported by the benchmark script) |
 
-- `results_table_prf.csv` — test precision, recall, and $F_1$ (validation-tuned threshold) for all models and feature sets
-- `figures/pr_overlay_6panel.pdf` — six-panel precision--recall figure in the paper
-- `reproduce_results.py` — writes `results_tables.tex` for inclusion in the LaTeX paper
-
-Raw licensed inputs (SafeGraph, Rhetorik/Dewey, etc.) and retraining code are not included.
-
-## Usage
+## Setup
 
 ```bash
+git lfs install
+git clone https://github.com/water6973/CREL-Census.git
+cd CREL-Census
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python reproduce_results.py
 ```
 
-Copy `results_tables.tex` and `figures/pr_overlay_6panel.pdf` into the paper project, then compile `paper/main.tex`.
+## Train models
+
+```bash
+python scripts/train_closure_benchmark.py
+```
+
+Optional flags: `--hp-trials 8`, `--output-dir outputs/benchmark`, `--parquet data/establishment_quarter_panel.parquet`.
+
+First run builds row samples from the parquet and caches them under `outputs/sample_cache/` (large; created locally, not committed).
+
+## Outputs
+
+Written to `outputs/benchmark/` by default: trained models, `metrics.json`, precision--recall plots, and `results_table_prf.csv` per run.

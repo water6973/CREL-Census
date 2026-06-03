@@ -1,0 +1,98 @@
+{
+  "dataset": "final_dataset_final.parquet",
+  "n_columns": 63,
+  "categories": {
+    "DO_NOT_USE": {
+      "description": "Label leakage or post-outcome panel fields. Exclude from feature matrices.",
+      "columns": [
+        "CLOSED_ON",
+        "STATUS",
+        "CLOSED_NEXT_QUARTER"
+      ]
+    },
+    "QUARTERLY": {
+      "description": "Values that change by panel quarter (time t). QWI for establishment county/NAICS bucket; county macro for location.",
+      "columns": [
+        "QUARTER",
+        "AGE",
+        "sz_Emp",
+        "sz_Payroll",
+        "sz_HirA",
+        "sz_Sep",
+        "ag_Emp",
+        "ag_Payroll",
+        "ag_HirA",
+        "ag_Sep",
+        "sz_TurnOvrS",
+        "sz_HirR",
+        "ag_TurnOvrS",
+        "ag_HirR",
+        "sz_EarnBeg",
+        "sz_EarnS",
+        "ag_EarnBeg",
+        "ag_EarnS",
+        "UNEMPLOYMENT_RATE_PCT",
+        "LABOR_FORCE",
+        "EMPLOYED",
+        "UNEMPLOYED",
+        "INDEX_NSA",
+        "INDEX_SA",
+        "PERSONAL_INCOME_THOUSANDS",
+        "COUNTY_GDP_THOUSANDS"
+      ]
+    },
+    "STATIC": {
+      "description": "Repeated each quarter but constant within an establishment over the panel (POI identity, FOIA/SBA, geography).",
+      "columns": [
+        "LATITUDE",
+        "LONGITUDE",
+        "COUNTY_FIPS",
+        "DATE_FOUNDED",
+        "ENTITY_TYPE",
+        "REVENUE_IN_USD",
+        "NUMBER_OF_EMPLOYEES",
+        "ENCLOSED",
+        "INCLUDES_PARKING_LOT",
+        "NAICS_FIRST_DIGIT",
+        "NAICS_FIRST_TWO",
+        "WKT_AREA_SQ_METERS",
+        "loanstatus",
+        "approvalfy",
+        "grossapproval",
+        "naicscode",
+        "businessage"
+      ]
+    },
+    "LAGGED": {
+      "description": "Rolling 8-quarter mean of quarterly series through quarter t (includes quarter t). Pruned to SHAP-important series only.",
+      "columns": [
+        "sz_Emp_mean_last8",
+        "sz_HirA_mean_last8",
+        "ag_Emp_mean_last8",
+        "ag_HirA_mean_last8",
+        "ag_Sep_mean_last8",
+        "sz_TurnOvrS_mean_last8",
+        "sz_HirR_mean_last8",
+        "ag_TurnOvrS_mean_last8",
+        "ag_HirR_mean_last8",
+        "sz_EarnBeg_mean_last8",
+        "sz_EarnS_mean_last8",
+        "ag_EarnBeg_mean_last8",
+        "ag_EarnS_mean_last8",
+        "INDEX_NSA_mean_last8",
+        "INDEX_SA_mean_last8",
+        "PERSONAL_INCOME_THOUSANDS_mean_last8",
+        "COUNTY_GDP_THOUSANDS_mean_last8"
+      ]
+    }
+  },
+  "modeling_notes": {
+    "usable_feature_count": 60,
+    "quarterly_panel_index": ["QUARTER", "AGE"],
+    "targets": {
+      "close_in_panel_period": "CLOSED_ON non-empty (same label every row per establishment)",
+      "close_next_quarter": "CLOSED_NEXT_QUARTER"
+    },
+    "empty_quarterly_often": ["sz_Payroll", "ag_Payroll"]
+  }
+}
