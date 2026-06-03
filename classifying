@@ -1,8 +1,0 @@
-import pandas as pd
-feature_importance = pd.Series(
-    xgb.feature_importances_,
-    index=X_train.columns
-).sort_values(ascending=False)
-print(feature_importance.head(20))
-print(ratio)
-print(Y_train.value_counts())
