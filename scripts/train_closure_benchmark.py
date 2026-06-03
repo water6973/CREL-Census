@@ -71,7 +71,7 @@ from train_combined_catboost import (  # noqa: E402
 DEFAULT_PARQUET = ROOT / "data/establishment_quarter_panel.parquet"
 DEFAULT_OUT = ROOT / "outputs/benchmark"
 DEFAULT_OUT_NO_QUARTER = ROOT / "outputs/benchmark_no_quarter"
-DEFAULT_OUT_V2 = ROOT / "outputs/benchmark"
+DEFAULT_OUT_V2 = ROOT / "outputs/benchmark_v2"
 SEASONAL_COLS = ("QUARTER_SIN", "QUARTER_COS")
 TOP_K_FRACS = (0.01, 0.02, 0.05)
 CATEGORIES_JSON = ROOT / "data/feature_categories.json"
