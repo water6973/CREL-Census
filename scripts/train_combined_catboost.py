@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
-CatBoost on final_dataset_combined.parquet (static + quarterly + 72 lag features).
+Parquet streaming and sample-cache helpers for train_closure_benchmark.py.
 
-Two targets:
-  1) y_close_in_panel_period — CLOSED_ON set (closure during panel window)
-  2) CLOSED_NEXT_QUARTER — closure in the following quarter
-
-Outputs PR curves/metrics and SHAP (full + lag-only rankings) under data/processed/combined_catboost_models/.
+This file is imported by the benchmark script (row sampling, LEAK_COLS, CAT_FEATURES,
+stream_panel_period_sample, stream_next_quarter_sample, load/save_sample_cache).
+Run train_closure_benchmark.py as the entry point; do not treat this module as a separate pipeline.
 """
 
 from __future__ import annotations
