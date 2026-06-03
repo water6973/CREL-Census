@@ -56,7 +56,7 @@ if _sp not in sys.path:
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = _SCRIPTS
 
-from train_combined_catboost import (  # noqa: E402
+from panel_sampling import (  # noqa: E402
     CAT_FEATURES,
     DEFAULT_SAMPLE_CACHE,
     LEAK_COLS,
@@ -77,7 +77,7 @@ TOP_K_FRACS = (0.01, 0.02, 0.05)
 CATEGORIES_JSON = ROOT / "data/feature_categories.json"
 
 TARGETS = ("panel_period", "next_quarter")
-# Cache folder names match train_combined_catboost.py for resume/reuse.
+# Cache folder names match panel_sampling.py for resume/reuse.
 CACHE_TARGET = {"panel_period": "close_in_panel_period", "next_quarter": "closed_next_quarter"}
 ALGOS = ("xgboost", "ngboost", "catboost")
 FEATURE_SETS = ("static_only", "quarterly_only", "quarterly_lagged", "full")

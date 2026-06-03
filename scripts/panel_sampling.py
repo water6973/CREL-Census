@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Parquet streaming and sample-cache helpers for train_closure_benchmark.py.
+Parquet streaming and sample-cache helpers for train_closure_models.py.
 
-Imported by the benchmark script (row sampling, LEAK_COLS, CAT_FEATURES,
+Imported by the training script (row sampling, LEAK_COLS, CAT_FEATURES,
 stream_panel_period_sample, stream_next_quarter_sample, load/save_sample_cache).
-Run train_closure_benchmark.py as the entry point.
+Run train_closure_models.py as the entry point.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from sklearn.model_selection import ParameterSampler, train_test_split
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PARQUET = ROOT / "data/establishment_quarter_panel.parquet"
 DEFAULT_OUT = ROOT / "outputs/sample_cache"
-DEFAULT_SAMPLE_CACHE = DEFAULT_OUT / "sample_cache"
+DEFAULT_SAMPLE_CACHE = DEFAULT_OUT
 
 QUARTER_RE = re.compile(r"^(\d{4})Q([1-4])$")
 LAG_SUFFIXES = ("delta_1q", "delta_4q", "mean_last8")
@@ -982,4 +982,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(
+        "Use train_closure_models.py --v2 to train all 24 paper models. "
+        "This file is imported for parquet sampling only."
+    )
