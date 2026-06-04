@@ -39,7 +39,7 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from sklearn.model_selection import ParameterSampler, train_test_split
+from sklearn.model_selection import ParameterSampler
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils import compute_sample_weight
 from xgboost import XGBClassifier
@@ -179,18 +179,9 @@ def ensure_samples(
     seed: int,
     train_end: str,
     val_end: str,
-    max_train: int,
-    max_val: int,
-    max_test: int,
-    neg_ratio: int,
     force: bool,
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
-    sampling = {
-        "max_train": max_train,
-        "max_val": max_val,
-        "max_test": max_test,
-        "neg_ratio": neg_ratio,
-    }
+    sampling: dict = {"full_panel": True}
     if target == "next_quarter":
         sampling["train_end"] = train_end
         sampling["val_end"] = val_end
@@ -215,12 +206,7 @@ def ensure_samples(
             parquet,
             feature_cols=feature_cols,
             cat_cols=cat_set,
-            max_train=max_train,
-            max_val=max_val,
-            max_test=max_test,
-            neg_ratio=neg_ratio,
             seed=seed,
-            checkpoint_path=cache_root / cache_name / fp / "scan_checkpoint.pkl",
         )
     else:
         tr, ytr, va, yva, te, yte, n_in = stream_next_quarter_sample(
@@ -229,12 +215,7 @@ def ensure_samples(
             cat_cols=cat_set,
             train_end=train_end,
             val_end=val_end,
-            max_train=max_train,
-            max_val=max_val,
-            max_test=max_test,
-            neg_ratio=neg_ratio,
             seed=seed,
-            checkpoint_path=cache_root / cache_name / fp / "scan_checkpoint.pkl",
         )
 
     save_sample_cache(
@@ -402,13 +383,8 @@ def shap_summary(
     y: pd.Series,
     cat_cols: list[str],
     out_dir: Path,
-    *,
-    max_rows: int,
 ) -> None:
-    if len(X) > max_rows and y.nunique() >= 2:
-        Xs, _, ys, _ = train_test_split(X, y, train_size=max_rows, stratify=y, random_state=42)
-    else:
-        Xs, ys = X, y
+    Xs, ys = X, y
 
     names = list(X.columns)
     if model_kind == "catboost":
@@ -508,7 +484,6 @@ def hp_search(
     *,
     trials: int,
     hp_iterations: int,
-    ngboost_max_train: int,
     seed: int,
 ) -> tuple[dict, list[dict]]:
     space = hp_param_space(algo)
@@ -531,7 +506,6 @@ def hp_search(
                 y_val,
                 val,
                 y_val,
-                max_train=ngboost_max_train,
                 params=params,
             )
         ap = float(average_precision_score(y_val, p_val))
@@ -636,13 +610,9 @@ def train_ngboost(
     test: pd.DataFrame,
     y_test: pd.Series,
     *,
-    max_train: int,
     params: dict | None = None,
 ) -> tuple[NGBClassifier, np.ndarray, np.ndarray]:
-    if len(train) > max_train and y_train.nunique() >= 2:
-        tr, _, yr, _ = train_test_split(train, y_train, train_size=max_train, stratify=y_train, random_state=42)
-    else:
-        tr, yr = train, y_train
+    tr, yr = train, y_train
     w = compute_sample_weight("balanced", yr)
     p = {"n_estimators": 400, "learning_rate": 0.05, "minibatch_frac": 0.8}
     if params:
@@ -680,8 +650,6 @@ def run_one(
     y_test: pd.Series,
     feature_groups: dict[str, list[str]],
     out_root: Path,
-    shap_max_rows: int,
-    ngboost_max_train: int,
     cat_cols: frozenset[str],
     seasonal_encoding: bool,
     hp_trials: int,
@@ -727,7 +695,6 @@ def run_one(
             cat_in,
             trials=hp_trials,
             hp_iterations=hp_iterations,
-            ngboost_max_train=ngboost_max_train,
             seed=seed,
         )
         (run_dir / "hyperparameter_search.json").write_text(
@@ -747,7 +714,7 @@ def run_one(
         save_model(algo, model, run_dir / "model.json")
     else:
         model, p_val, p_test = train_ngboost(
-            tr, y_train, va, y_val, te, y_test, max_train=ngboost_max_train, params=best_params or None
+            tr, y_train, va, y_val, te, y_test, params=best_params or None
         )
         save_model(algo, model, run_dir / "model.pkl")
 
@@ -756,7 +723,7 @@ def run_one(
     plot_pr(y_te, p_test, run_dir / "pr_curve_raw.png", f"{algo} raw | {target} | {feature_set}")
     plot_pr(y_te, p_cal, run_dir / "pr_curve_calibrated.png", f"{algo} calibrated | {target} | {feature_set}")
     plot_calibration(y_te, p_test, p_cal, run_dir / "calibration_curve.png")
-    shap_summary(algo, model, te, y_test, cat_for_shap, run_dir, max_rows=shap_max_rows)
+    shap_summary(algo, model, te, y_test, cat_for_shap, run_dir)
 
     metrics = {
         "target": target,
@@ -884,13 +851,11 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--train-end", default="2023Q4")
     ap.add_argument("--val-end", default="2024Q2")
-    ap.add_argument("--max-train-rows", type=int, default=600_000)
-    ap.add_argument("--max-val-rows", type=int, default=120_000)
-    ap.add_argument("--max-test-rows", type=int, default=180_000)
-    ap.add_argument("--neg-ratio", type=int, default=20)
-    ap.add_argument("--shap-max-rows", type=int, default=12_000)
-    ap.add_argument("--ngboost-max-train", type=int, default=150_000)
-    ap.add_argument("--force-resample", action="store_true")
+    ap.add_argument(
+        "--force-resample",
+        action="store_true",
+        help="Rebuild full-panel train/val/test caches from parquet (no row caps)",
+    )
     ap.add_argument("--only", type=str, default="", help="Run key prefix filter, e.g. panel_period|full|")
     args = ap.parse_args()
 
@@ -929,10 +894,6 @@ def main() -> None:
             seed=args.seed,
             train_end=args.train_end,
             val_end=args.val_end,
-            max_train=args.max_train_rows,
-            max_val=args.max_val_rows,
-            max_test=args.max_test_rows,
-            neg_ratio=args.neg_ratio,
             force=args.force_resample,
         )
         tr, ytr, va, yva, te, yte = samples
@@ -966,8 +927,6 @@ def main() -> None:
                         y_test=yte,
                         feature_groups=feature_groups,
                         out_root=args.output_dir,
-                        shap_max_rows=args.shap_max_rows,
-                        ngboost_max_train=args.ngboost_max_train,
                         cat_cols=cat_cols,
                         seasonal_encoding=args.seasonal_encoding,
                         hp_trials=args.hp_trials,

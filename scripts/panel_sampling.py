@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Parquet streaming and sample-cache helpers for train_closure_models.py.
+Parquet streaming and split-cache helpers for train_closure_models.py.
 
-Imported by the training script (row sampling, LEAK_COLS, CAT_FEATURES,
-stream_panel_period_sample, stream_next_quarter_sample, load/save_sample_cache).
+Builds train/validation/test sets from the full establishment-quarter panel:
+every eligible row is kept (no row caps, no negative downsampling, no chunked
+scoring). Splits are materialized in memory and written to sample-cache parquet
+for reuse.
+
 Run train_closure_models.py as the entry point.
 """
 
@@ -151,46 +154,31 @@ def row_to_features(row: pd.Series, feature_cols: list[str], cat_cols: set[str])
     return out
 
 
-@dataclass
-class SplitBucket:
-    pos_rows: list[dict[str, object]]
-    neg_rows: list[dict[str, object]]
-    neg_seen: int = 0
+SplitChunks = list[tuple[pd.DataFrame, pd.Series]]
 
 
-def _add_to_bucket(
-    bucket: SplitBucket,
-    feats: dict[str, object],
-    y: int,
-    *,
-    cap: int,
-    neg_ratio: int,
-    rng: np.random.Generator,
-) -> None:
-    if y == 1:
-        bucket.pos_rows.append(feats)
+def _append_split(chunks: SplitChunks, features: pd.DataFrame, labels: pd.Series) -> None:
+    if len(features) == 0:
         return
-    n_pos = len(bucket.pos_rows)
-    max_neg = min(cap - n_pos, max(1, n_pos * neg_ratio)) if n_pos else min(cap, max(1, neg_ratio * 10))
-    if max_neg <= 0:
-        return
-    bucket.neg_seen += 1
-    if len(bucket.neg_rows) < max_neg:
-        bucket.neg_rows.append(feats)
-        return
-    j = int(rng.integers(0, bucket.neg_seen))
-    if j < max_neg:
-        bucket.neg_rows[j] = feats
+    chunks.append(
+        (
+            features.reset_index(drop=True),
+            labels.reset_index(drop=True).astype(np.int8),
+        )
+    )
 
 
-def bucket_to_frame(b: SplitBucket) -> tuple[pd.DataFrame, pd.Series]:
-    rows = b.pos_rows + b.neg_rows
-    labels = [1] * len(b.pos_rows) + [0] * len(b.neg_rows)
-    return pd.DataFrame(rows), pd.Series(labels, dtype=np.int8, name="y")
+def _concat_split(chunks: SplitChunks) -> tuple[pd.DataFrame, pd.Series]:
+    if not chunks:
+        return pd.DataFrame(), pd.Series(dtype=np.int8, name="y")
+    x = pd.concat([c[0] for c in chunks], ignore_index=True)
+    y = pd.concat([c[1] for c in chunks], ignore_index=True)
+    y.name = "y"
+    return x, y
 
 
 def sample_cache_fingerprint(parquet: Path, *, target: str, seed: int, sampling: dict) -> str:
-    """Stable cache id from parquet mtime + sampling hyperparameters."""
+    """Stable cache id from parquet mtime + split definition."""
     payload = {
         "target": target,
         "parquet": str(parquet.resolve()),
@@ -489,39 +477,12 @@ def stream_panel_period_sample(
     *,
     feature_cols: list[str],
     cat_cols: set[str],
-    max_train: int,
-    max_val: int,
-    max_test: int,
-    neg_ratio: int,
     seed: int,
-    checkpoint_path: Path | None = None,
-    checkpoint_every: int = 2_000_000,
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, int]:
-    """Establishment-level split; first row per establishment only."""
-    rng = np.random.default_rng(seed)
-    buckets = {
-        "train": SplitBucket([], []),
-        "val": SplitBucket([], []),
-        "test": SplitBucket([], []),
-    }
-    caps = {"train": max_train, "val": max_val, "test": max_test}
+    """Establishment-level split; first row per establishment only (full panel)."""
+    accs: dict[str, SplitChunks] = {"train": [], "val": [], "test": []}
     seen_est: set[str] = set()
     n_in = 0
-    resume_batch = 0
-
-    if checkpoint_path is not None:
-        ck = load_scan_checkpoint(checkpoint_path)
-        if ck is not None:
-            buckets = ck["buckets"]
-            n_in = int(ck["n_in"])
-            seen_est = set(ck.get("seen_est", []))
-            resume_batch = int(ck.get("resume_batch", n_in // 250_000))
-            logging.info(
-                "Resuming panel scan from row %s (batch %s) | train pos=%s",
-                f"{n_in:,}",
-                resume_batch,
-                len(buckets["train"].pos_rows),
-            )
 
     cols = list(
         dict.fromkeys(
@@ -532,9 +493,7 @@ def stream_panel_period_sample(
     )
     pf = pq.ParquetFile(path)
     batch_size = 250_000
-    for batch_i, batch in enumerate(pf.iter_batches(batch_size=batch_size, columns=cols)):
-        if batch_i < resume_batch:
-            continue
+    for batch in pf.iter_batches(batch_size=batch_size, columns=cols):
         df = batch.to_pandas()
         n_in += len(df)
         closed = df["CLOSED_ON"].notna() & (df["CLOSED_ON"].astype(str).str.strip() != "")
@@ -544,44 +503,20 @@ def stream_panel_period_sample(
             continue
         seen_est.update(df["_eid"].tolist())
         df = df.drop_duplicates(subset=["_eid"], keep="first")
+        df = df.assign(_sp=df["_eid"].map(lambda e: est_split(e, seed=seed)))
         Xb = _features_from_batch(df, feature_cols, cat_cols)
-        for i in range(len(df)):
-            eid = df["_eid"].iat[i]
-            sp = est_split(eid, seed=seed)
-            if sp not in buckets:
-                continue
-            _add_to_bucket(
-                buckets[sp],
-                Xb.iloc[i].to_dict(),
-                int(df["_y"].iat[i]),
-                cap=caps[sp],
-                neg_ratio=neg_ratio,
-                rng=rng,
-            )
+        for sp in ("train", "val", "test"):
+            mask = df["_sp"] == sp
+            if mask.any():
+                _append_split(accs[sp], Xb.loc[mask], df.loc[mask, "_y"])
         if n_in % 2_000_000 == 0:
-            logging.info(
-                "panel scan %s | train pos=%s | val pos=%s | test pos=%s",
-                f"{n_in:,}",
-                len(buckets["train"].pos_rows),
-                len(buckets["val"].pos_rows),
-                len(buckets["test"].pos_rows),
-            )
-        if checkpoint_path is not None and n_in % checkpoint_every == 0:
-            save_scan_checkpoint(
-                checkpoint_path,
-                buckets=buckets,
-                n_in=n_in,
-                extra={"seen_est": seen_est, "resume_batch": batch_i + 1},
-            )
+            logging.info("panel scan %s | establishments=%s", f"{n_in:,}", f"{len(seen_est):,}")
 
-    if checkpoint_path is not None and checkpoint_path.exists():
-        checkpoint_path.unlink()
-
-    train_df, y_train = bucket_to_frame(buckets["train"])
-    val_df, y_val = bucket_to_frame(buckets["val"])
-    test_df, y_test = bucket_to_frame(buckets["test"])
+    train_df, y_train = _concat_split(accs["train"])
+    val_df, y_val = _concat_split(accs["val"])
+    test_df, y_test = _concat_split(accs["test"])
     logging.info(
-        "Panel-period sample: train=%s pos=%s | val=%s pos=%s | test=%s pos=%s | est=%s",
+        "Panel-period (full): train=%s pos=%s | val=%s pos=%s | test=%s pos=%s | est=%s",
         len(train_df),
         int(y_train.sum()),
         len(val_df),
@@ -600,45 +535,16 @@ def stream_next_quarter_sample(
     cat_cols: set[str],
     train_end: str,
     val_end: str,
-    max_train: int,
-    max_val: int,
-    max_test: int,
-    neg_ratio: int,
     seed: int,
-    checkpoint_path: Path | None = None,
-    checkpoint_every: int = 2_000_000,
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, int]:
-    rng = np.random.default_rng(seed)
-    buckets = {
-        "train": SplitBucket([], []),
-        "val": SplitBucket([], []),
-        "test": SplitBucket([], []),
-    }
-    caps = {"train": max_train, "val": max_val, "test": max_test}
+    accs: dict[str, SplitChunks] = {"train": [], "val": [], "test": []}
     n_in = 0
-    n_skip = int(0)
-    resume_batch = 0
-
-    if checkpoint_path is not None:
-        ck = load_scan_checkpoint(checkpoint_path)
-        if ck is not None:
-            buckets = ck["buckets"]
-            n_in = int(ck["n_in"])
-            n_skip = int(ck.get("n_skip", 0))
-            resume_batch = int(ck.get("resume_batch", n_in // 250_000))
-            logging.info(
-                "Resuming next-q scan from row %s (batch %s) | train pos=%s",
-                f"{n_in:,}",
-                resume_batch,
-                len(buckets["train"].pos_rows),
-            )
+    n_skip = 0
 
     cols = list(dict.fromkeys(feature_cols + list(LEAK_COLS) + ["QUARTER"]))
     pf = pq.ParquetFile(path)
     batch_size = 250_000
-    for batch_i, batch in enumerate(pf.iter_batches(batch_size=batch_size, columns=cols)):
-        if batch_i < resume_batch:
-            continue
+    for batch in pf.iter_batches(batch_size=batch_size, columns=cols):
         df = batch.to_pandas()
         n_in += len(df)
         valid = df["CLOSED_NEXT_QUARTER"].notna()
@@ -649,48 +555,34 @@ def stream_next_quarter_sample(
         y = df["CLOSED_NEXT_QUARTER"].map(lambda v: 1 if v is True or str(v).lower() in ("true", "1") else 0)
         splits = df["QUARTER"].astype(str).map(lambda q: split_name(q, train_end=train_end, val_end=val_end))
         df = df.assign(_y=y.astype(np.int8), _sp=splits)
-        df = df.loc[df["_sp"].isin(buckets.keys())]
+        df = df.loc[df["_sp"].isin(accs.keys())]
         if df.empty:
             continue
         Xb = _features_from_batch(df, feature_cols, cat_cols)
-        for i in range(len(df)):
-            sp = df["_sp"].iat[i]
-            _add_to_bucket(
-                buckets[sp],
-                Xb.iloc[i].to_dict(),
-                int(df["_y"].iat[i]),
-                cap=caps[sp],
-                neg_ratio=neg_ratio,
-                rng=rng,
-            )
+        for sp in ("train", "val", "test"):
+            mask = df["_sp"] == sp
+            if mask.any():
+                _append_split(accs[sp], Xb.loc[mask], df.loc[mask, "_y"])
         if n_in % 2_000_000 == 0:
             logging.info(
-                "next-q scan %s | train pos=%s | val pos=%s | test pos=%s",
+                "next-q scan %s | train=%s | val=%s | test=%s",
                 f"{n_in:,}",
-                len(buckets["train"].pos_rows),
-                len(buckets["val"].pos_rows),
-                len(buckets["test"].pos_rows),
-            )
-        if checkpoint_path is not None and n_in % checkpoint_every == 0:
-            save_scan_checkpoint(
-                checkpoint_path,
-                buckets=buckets,
-                n_in=n_in,
-                extra={"n_skip": n_skip, "resume_batch": batch_i + 1},
+                sum(len(c[0]) for c in accs["train"]),
+                sum(len(c[0]) for c in accs["val"]),
+                sum(len(c[0]) for c in accs["test"]),
             )
 
-    if checkpoint_path is not None and checkpoint_path.exists():
-        checkpoint_path.unlink()
-
-    train_df, y_train = bucket_to_frame(buckets["train"])
-    val_df, y_val = bucket_to_frame(buckets["val"])
-    test_df, y_test = bucket_to_frame(buckets["test"])
+    train_df, y_train = _concat_split(accs["train"])
+    val_df, y_val = _concat_split(accs["val"])
+    test_df, y_test = _concat_split(accs["test"])
     logging.info(
-        "Next-quarter sample: train=%s pos=%s | val=%s | test=%s | skipped=%s",
+        "Next-quarter (full): train=%s pos=%s | val=%s pos=%s | test=%s pos=%s | skipped=%s",
         len(train_df),
         int(y_train.sum()),
         len(val_df),
+        int(y_val.sum()),
         len(test_df),
+        int(y_test.sum()),
         n_skip,
     )
     return train_df, y_train, val_df, y_val, test_df, y_test, n_in
